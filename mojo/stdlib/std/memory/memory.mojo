@@ -951,7 +951,7 @@ def destroy_n[
 
 
 @always_inline("nodebug")
-def forget_deinit[T: AnyType](var value: T):
+def forget_deinit[T: ImplicitlyDeletable](var value: T):
     """Takes ownership and skips running `__deinit__` deinitializers.
 
     This is a low-level operation, and should not be used unless necessary.
@@ -961,12 +961,18 @@ def forget_deinit[T: AnyType](var value: T):
     This operation is not considered unsafe, as Mojo can not guarantee in
     general that destructors will eventually be run.
 
+    Only `ImplicitlyDeletable` types are accepted. Types that opt out of
+    implicit destruction (for example, linear types declared with
+    `ImplicitlyDeletable where False`) require the user to call a designated
+    named destructor, and cannot be discarded with `forget_deinit()`.
+
     Note: Take care to use `^` to transfer when passing `ImplicitlyCopyable`
     values to `forget_deinit()`, to avoid forgetting a copy instead of the
     original value.
 
     Parameters:
         T: The type of the value to discard without running a deinitializer.
+            Must be `ImplicitlyDeletable`.
 
     Args:
         value: The value to discard without running a deinitializer.
@@ -1012,5 +1018,24 @@ def forget_deinit[T: AnyType](var value: T):
         # Neither Parent.__deinit__ nor Child.__deinit__ is called.
         forget_deinit(parent^)
     ```
+    """
+    _forget_deinit(value^)
+
+
+@always_inline("nodebug")
+def _forget_deinit[T: AnyType](var value: T):
+    """Takes ownership and skips running `__deinit__` deinitializers.
+
+    This is the internal, unconstrained implementation of `forget_deinit()`.
+    Unlike the public API, it accepts any type, including types that are not
+    `ImplicitlyDeletable` (for example, linear types). It is intended for use
+    within the standard library after every field of `value` has already been
+    moved out, so that only a trivial shell remains to be discarded.
+
+    Parameters:
+        T: The type of the value to discard without running a deinitializer.
+
+    Args:
+        value: The value to discard without running a deinitializer.
     """
     __mlir_op.`lit.ownership.mark_destroyed`(__get_mvalue_as_litref(value))

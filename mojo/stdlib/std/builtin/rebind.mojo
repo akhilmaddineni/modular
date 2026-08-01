@@ -105,7 +105,11 @@ def rebind_var[
     """
     ref dest_ref = rebind[dest_type](src)
     dest = Pointer(to=dest_ref).unsafe_take_pointee()
-    std.memory.forget_deinit(src^)
+    # `src` has been moved out via `unsafe_take_pointee`, so discard the
+    # remaining shell without running a destructor. Use the internal helper
+    # because `src_type` is only `Movable`, not necessarily
+    # `ImplicitlyDeletable`.
+    std.memory._forget_deinit(src^)
 
 
 comptime downcast[

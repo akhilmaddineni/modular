@@ -27,7 +27,7 @@ These utilities enable functional-style iteration patterns and composable iterat
 operations.
 """
 
-from std.memory import forget_deinit
+from std.memory import _forget_deinit
 
 # ===-----------------------------------------------------------------------===#
 # count
@@ -255,8 +255,9 @@ def _flatten[
         )
 
     # Every element has been moved out and the `!kgen.struct` destructor is
-    # trivial, so discard `arg` without running a destructor.
-    forget_deinit(arg^)
+    # trivial, so discard `arg` without running a destructor. Use the internal
+    # helper because `arg` may be a linear (non-`ImplicitlyDeletable`) type.
+    _forget_deinit(arg^)
 
 
 # ===-----------------------------------------------------------------------===#

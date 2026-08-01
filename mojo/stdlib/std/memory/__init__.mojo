@@ -50,6 +50,7 @@ from .memory import (
     unsafe_uninit_copy_n,
     unsafe_uninit_move_n,
     forget_deinit,
+    _forget_deinit,
 )
 from .stack_allocation import stack_allocation, unsafe_stack_allocation
 from .owned_pointer import OwnedPointer
