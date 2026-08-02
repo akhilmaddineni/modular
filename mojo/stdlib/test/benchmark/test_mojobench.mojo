@@ -79,7 +79,7 @@ def test_mojobench() raises:
     # CHECK: | bench2/input_id:1 |
     print(m)
 
-    # CHECK: name,met (ms),iters,throughput (GElems/s),Arithmetic (GFLOPS/s),min (ms),mean (ms),max (ms),duration (ms)
+    # CHECK: name,met (ms),iters,throughput (GElems/s),Arithmetic (GFLOPS/s),min (ms),mean (ms),max (ms),duration (ms),median (ms),stddev (ms)
     # CHECK: "bench1",
     # CHECK: "bench2/input_id:0",
     # CHECK: "bench2/input_id:1",

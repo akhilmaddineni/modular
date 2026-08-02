@@ -182,6 +182,7 @@ elapsed and either `max_runtime_secs` OR `max_iters` is achieved.
 
 import std.format._utils as fmt
 
+from std.math import sqrt
 from std.time import time_function
 from std.testing import assert_true
 from std.utils.numerics import max_finite, min_finite
@@ -377,6 +378,80 @@ struct Report(Copyable, Defaultable):
             if run._is_significant and run.mean(unit) > result:
                 result = run.mean(unit)
         return result
+
+    def _significant_means(self, unit: String) -> List[Float64]:
+        """Collects the mean duration of every significant batch."""
+        var means = List[Float64]()
+        for run in self.runs:
+            if run._is_significant:
+                means.append(run.mean(unit))
+        return means^
+
+    def median(self, unit: String = Unit.s) -> Float64:
+        """Returns the median of the mean duration of each significant batch.
+
+        Like `min()` and `max()`, this summarizes the per-batch means and so
+        weights every batch equally, whereas `mean()` weights by iteration
+        count. It is robust to a single slow batch caused by scheduler
+        preemption, a page fault, or thermal throttling.
+
+        A run marks only its final batches significant, so this matches
+        `mean()` unless the report has several significant batches, as it does
+        when `max_batch_size` pins every batch to the same size.
+
+        Args:
+            unit: The time unit to display, for example: ns, us, ms, s
+                (default `s`).
+
+        Returns:
+            The median batch duration, or 0 if no batch is significant.
+        """
+        var means = self._significant_means(unit)
+        var count = len(means)
+        if count == 0:
+            return 0
+        sort(means)
+        var mid = count // 2
+        if count % 2 == 1:
+            return means[mid]
+        return (means[mid - 1] + means[mid]) / 2
+
+    def stddev(self, unit: String = Unit.s) -> Float64:
+        """Returns the spread of the mean duration of each significant batch.
+
+        This is the sample standard deviation, so it quantifies how repeatable
+        a measurement is: a small value relative to `mean()` means differences
+        between runs are meaningful, while a large one means they are likely
+        noise. Like `median()`, it summarizes the per-batch means and weights
+        every batch equally.
+
+        A run marks only its final batches significant, so this is 0 unless the
+        report has at least two significant batches, as it does when
+        `max_batch_size` pins every batch to the same size.
+
+        Args:
+            unit: The time unit to display, for example: ns, us, ms, s
+                (default `s`).
+
+        Returns:
+            The standard deviation of the batch durations, or 0 if there are
+            fewer than two significant batches.
+        """
+        var means = self._significant_means(unit)
+        var count = len(means)
+        if count < 2:
+            return 0
+        var total = Float64(0)
+        for value in means:
+            total += value
+        var average = total / Float64(count)
+        var sum_squared_deviations = Float64(0)
+        for value in means:
+            var deviation = value - average
+            sum_squared_deviations += deviation * deviation
+        # Bessel-corrected (`n - 1`) sample standard deviation, since the
+        # batches are a sample of the possible executions, not the population.
+        return sqrt(sum_squared_deviations / Float64(count - 1))
 
     def as_string(self, unit: String = Unit.s) -> String:
         """Converts the Report to a String.

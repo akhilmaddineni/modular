@@ -13,7 +13,7 @@
 
 from std.time import sleep, time_function
 
-from std.benchmark import Batch, Report, clobber_memory, keep, run
+from std.benchmark import Batch, Report, Unit, clobber_memory, keep, run
 from std.benchmark.bencher import (
     Bench,
     BenchConfig,
@@ -166,6 +166,114 @@ def test_report() raises:
     assert_true("Warmup Total: " in report_string)
     assert_true("Fastest Mean: " in report_string)
     assert_true("Slowest Mean: " in report_string)
+
+
+def _report_with_batches(var durations: List[Int]) -> Report:
+    """Builds a `Report` whose batches each run once for the given durations."""
+    var report = Report()
+    for duration in durations:
+        report.runs.append(
+            Batch(duration=duration, iterations=1, _is_significant=True)
+        )
+    return report^
+
+
+def test_report_median() raises:
+    # No batches at all.
+    assert_equal(Report().median(), 0.0)
+
+    # A single batch is its own median.
+    assert_equal(_report_with_batches([7]).median(Unit.ns), 7.0)
+
+    # Odd number of batches: the middle value, regardless of insertion order.
+    assert_equal(_report_with_batches([30, 10, 20]).median(Unit.ns), 20.0)
+
+    # Even number of batches: the mean of the two middle values.
+    assert_equal(_report_with_batches([40, 10, 30, 20]).median(Unit.ns), 25.0)
+
+    # The median ignores outliers that drag the mean away from the center.
+    var skewed = _report_with_batches([10, 10, 10, 10, 1000])
+    assert_equal(skewed.median(Unit.ns), 10.0)
+    assert_true(skewed.mean(Unit.ns) > skewed.median(Unit.ns))
+
+    # The result is scaled into the requested unit.
+    var scaled_median = _report_with_batches([1_000_000, 3_000_000, 2_000_000])
+    assert_equal(scaled_median.median(Unit.ms), 2.0)
+
+
+def test_report_stddev() raises:
+    # Fewer than two samples has no sample standard deviation.
+    assert_equal(Report().stddev(), 0.0)
+    assert_equal(_report_with_batches([7]).stddev(Unit.ns), 0.0)
+
+    # Identical batches have no spread.
+    assert_equal(_report_with_batches([5, 5, 5]).stddev(Unit.ns), 0.0)
+
+    # Bessel-corrected: mean is 4, deviations are -2/0/2, so the sample
+    # variance is (4 + 0 + 4) / 2 == 4 and the standard deviation is 2.
+    assert_equal(_report_with_batches([2, 4, 6]).stddev(Unit.ns), 2.0)
+
+    # A more volatile set of batches has a larger standard deviation.
+    var steady = _report_with_batches([10, 11, 10, 11])
+    var volatile = _report_with_batches([1, 40, 3, 90])
+    assert_true(volatile.stddev(Unit.ns) > steady.stddev(Unit.ns))
+
+    # The result is scaled into the requested unit.
+    var scaled = _report_with_batches([2_000_000, 4_000_000, 6_000_000])
+    assert_equal(scaled.stddev(Unit.ms), 2.0)
+
+
+def test_report_statistics_skip_insignificant_batches() raises:
+    var report = Report()
+    report.runs.append(Batch(duration=2, iterations=1, _is_significant=True))
+    report.runs.append(
+        Batch(duration=9999, iterations=1, _is_significant=False)
+    )
+    report.runs.append(Batch(duration=4, iterations=1, _is_significant=True))
+    report.runs.append(Batch(duration=6, iterations=1, _is_significant=True))
+
+    # Only the significant batches, 2/4/6, participate.
+    assert_equal(report.median(Unit.ns), 4.0)
+    assert_equal(report.stddev(Unit.ns), 2.0)
+
+
+def test_verbose_timing_reports_median_and_stddev() raises:
+    # Pinning `max_batch_size` makes every full batch significant, which is
+    # what leaves the report with more than one sample to summarize.
+    var config = BenchConfig(
+        max_batch_size=5, min_runtime_secs=0.01, max_runtime_secs=0.1
+    )
+    config.verbose_timing = True
+    var bench = Bench(config^)
+
+    @always_inline
+    def my_bench(mut b: Bencher):
+        b.iter(sleeper)
+
+    bench.bench_function(my_bench, BenchId("test_verbose_timing"))
+
+    ref report = bench.info_vec[0].result
+    var num_significant = 0
+    for batch in report.runs:
+        if batch._is_significant:
+            num_significant += 1
+    assert_true(num_significant > 1)
+
+    # With several significant batches the median sits inside the observed
+    # range and the batches actually vary, so the spread is non-zero.
+    assert_true(report.median(Unit.ms) >= report.min(Unit.ms))
+    assert_true(report.median(Unit.ms) <= report.max(Unit.ms))
+    assert_true(report.stddev(Unit.ms) > 0.0)
+
+    var table = String(bench)
+    assert_true("median (ms)" in table)
+    assert_true("stddev (ms)" in table)
+
+    # Both columns are dropped again when verbose timing is off.
+    bench.config.verbose_timing = False
+    var terse_table = String(bench)
+    assert_false("median (ms)" in terse_table)
+    assert_false("stddev (ms)" in terse_table)
 
 
 def test_bench_metric_write_repr_to() raises:
