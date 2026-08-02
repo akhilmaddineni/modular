@@ -11,7 +11,12 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 #
-# Fuzz target: Apple M5 (Metal) dense GEMM (`enqueue_apple_matmul`).
+# Fuzz target: Apple (Metal) dense GEMM -- both kernel paths.
+#
+# Covers the two dense GEMMs Apple ships, selected by the `path` fuzz axis:
+# `enqueue_apple_matmul` (M5 hardware MMA) and `gemm_kernel_apple_8x8` (the
+# path the dispatcher uses on M1-M4, which also runs on M5). Fuzzing only the
+# former would leave the target inert on every Apple GPU except an M5.
 #
 # This is the first Metal/Apple-GPU target in the fuzz suite. It differs from
 # the NVIDIA targets in two ways that shape the design:
@@ -63,10 +68,11 @@ from std.random import random_ui64, seed
 from std.sys.defines import get_defined_dtype, get_defined_int
 from std.utils.numerics import nan
 
-from std.gpu import global_idx
-from max.gpu.host import DeviceContext
+from std.gpu import WARP_SIZE, global_idx
+from max.gpu.host import DeviceBuffer, DeviceContext
 from layout import TileTensor
 from layout.tile_layout import row_major
+from linalg.matmul.gpu.apple import gemm_kernel_apple_8x8
 from linalg.matmul.gpu.apple.matmul_kernel import enqueue_apple_matmul
 
 from _fuzz import (
@@ -83,6 +89,26 @@ from _fuzz import (
 
 comptime in_dtype = get_defined_dtype["in_dtype", DType.float16]()
 comptime c_dtype = get_defined_dtype["c_dtype", DType.float32]()
+
+# Kernel path (a fuzz axis). Apple ships two dense GEMMs and the dispatcher picks
+# between them by hardware, so fuzzing only one leaves the other unexercised:
+#   PATH_M5   -- `AppleM5MatMul` via `enqueue_apple_matmul`: Metal 4 hardware MMA,
+#                Apple M5 ONLY (raises on compute_capability != 5).
+#   PATH_8X8  -- `gemm_kernel_apple_8x8`: the 8x8 simdgroup-matrix path the
+#                dispatcher uses for M1-M4. Runs on ANY Apple GPU, including M5.
+# The path is drawn per case rather than chosen from the live hardware so that a
+# spec means the same thing everywhere and a corpus entry stays portable; a
+# PATH_M5 case on non-M5 silicon reports FUZZ_SKIP instead of a bogus failure.
+# The draw is deliberately skewed 1:3 toward PATH_8X8: M5 is rare while every
+# other Apple GPU runs the 8x8 path, so an even split would burn half the budget
+# on instant skips for nearly every machine this target actually runs on.
+comptime PATH_M5 = 1
+comptime PATH_8X8 = 2
+
+# `gemm_kernel_apple_8x8` tiling, matching what the M1-M4 dispatcher enqueues.
+comptime B8_BM = 64
+comptime B8_BN = 64
+comptime B8_NSG = 4
 
 # `AppleM5MatMul` defaults: 64x64 threadgroup block, BK=16 K-strip. These are the
 # moduli where a ragged tail is handled by a different code path than a full tile.
@@ -172,8 +198,9 @@ struct CaseSpec(Copyable, Movable, Writable):
     var n: Int
     var k: Int
     var tb: Int  # 0 = NN, 1 = NT (transpose_b)
-    var splitk: Int  # 0 = auto, 1 = force on, 2 = force off
+    var splitk: Int  # 0 = auto, 1 = force on, 2 = force off (PATH_M5 only)
     var dist: Int  # value-distribution id (see _fuzz.VD_*)
+    var path: Int  # kernel path: PATH_M5 or PATH_8X8
 
     def write_to(self, mut writer: Some[Writer]):
         writer.write(
@@ -191,6 +218,10 @@ struct CaseSpec(Copyable, Movable, Writable):
             self.dist,
             " (",
             value_dist_name(self.dist),
+            ") path=",
+            self.path,
+            " (",
+            "m5" if self.path == PATH_M5 else "8x8",
             ")",
         )
 
@@ -220,6 +251,7 @@ def gen_specs(n: Int) -> List[CaseSpec]:
                 Int(random_ui64(0, 1)),
                 Int(random_ui64(0, 2)) if SPLIT_K_SUPPORTED else 0,
                 _auto_mix_dist(),
+                PATH_M5 if random_ui64(0, 3) == 0 else PATH_8X8,
             )
         )
     return specs^
@@ -232,6 +264,64 @@ def _force_split_k(splitk: Int) -> Optional[Bool]:
     if splitk == 2:
         return Optional[Bool](False)
     return Optional[Bool](None)
+
+
+def _launch[
+    transpose_b: Bool
+](
+    ctx: DeviceContext,
+    path: Int,
+    splitk: Int,
+    mut c_dev: DeviceBuffer[c_dtype],
+    a_dev: DeviceBuffer[in_dtype],
+    b_dev: DeviceBuffer[in_dtype],
+    m: Int,
+    n: Int,
+    k: Int,
+) raises:
+    """Wraps the device buffers as TileTensors and launches the selected path.
+
+    Takes raw buffers rather than tensors so the rerun (`determinism`) loop can
+    re-launch through the exact same code path as the first launch.
+    """
+    var b_rows = n if transpose_b else k
+    var b_cols = k if transpose_b else n
+    var a_tt = TileTensor(a_dev.unsafe_ptr(), row_major(m, k)).as_immut()
+    var b_tt = TileTensor(
+        b_dev.unsafe_ptr(), row_major(b_rows, b_cols)
+    ).as_immut()
+    var c_tt = TileTensor(c_dev.unsafe_ptr(), row_major(m, n))
+
+    if path == PATH_M5:
+        enqueue_apple_matmul[
+            in_type=in_dtype, c_type=c_dtype, transpose_b=transpose_b
+        ](c_tt, a_tt, b_tt, ctx, _force_split_k(splitk))
+    else:
+        comptime kernel = gemm_kernel_apple_8x8[
+            c_dtype,
+            in_dtype,
+            in_dtype,
+            type_of(c_tt).LayoutType,
+            type_of(a_tt).LayoutType,
+            type_of(b_tt).LayoutType,
+            type_of(c_tt).Storage,
+            type_of(a_tt).Storage,
+            type_of(b_tt).Storage,
+            transpose_b,
+            BLOCK_M=B8_BM,
+            BLOCK_N=B8_BN,
+            NUM_SIMDGROUPS=B8_NSG,
+        ]
+        ctx.enqueue_function[kernel](
+            c_tt,
+            a_tt,
+            b_tt,
+            Int32(m),
+            Int32(n),
+            Int32(k),
+            grid_dim=(ceildiv(n, B8_BN), ceildiv(m, B8_BM)),
+            block_dim=(B8_NSG * WARP_SIZE,),
+        )
 
 
 # ===----------------------------------------------------------------------=== #
@@ -250,7 +340,12 @@ def _run_case[
 ) raises:
     var m = spec.m
     var n = spec.n
-    var k = spec.k
+    # The 8x8 dispatch gate takes K as a multiple of 16, so round a fuzzed ragged
+    # K up to the next multiple for that path. The M5 path takes K exactly as
+    # drawn, so ragged-K tails stay covered there. Rounding (rather than
+    # rejecting the case) keeps every drawn shape useful on both paths, and it is
+    # deterministic, so a corpus repro replays identically.
+    var k = spec.k if spec.path == PATH_M5 else ceildiv(spec.k, 16) * 16
     var a_size = m * k
     var b_size = n * k  # [K, N] or [N, K]: same element count either way.
     var c_size = m * n
@@ -262,6 +357,7 @@ def _run_case[
     # shape (and so a shrunk repro reproduces the same probe).
     var probe_m = (spec.k * 7 + 3) % m
     var probe_k = (spec.m * 11 + 5) % k
+
     if contract:
         fill_uniform(a_host.as_span())
         fill_uniform(b_host.as_span())
@@ -276,17 +372,9 @@ def _run_case[
     ctx.enqueue_copy(a_dev, a_host)
     ctx.enqueue_copy(b_dev, b_host)
 
-    var b_rows = n if transpose_b else k
-    var b_cols = k if transpose_b else n
-    var a_tt = TileTensor(a_dev.unsafe_ptr(), row_major(m, k)).as_immut()
-    var b_tt = TileTensor(
-        b_dev.unsafe_ptr(), row_major(b_rows, b_cols)
-    ).as_immut()
-    var c_tt = TileTensor(c_dev.unsafe_ptr(), row_major(m, n))
-
-    enqueue_apple_matmul[
-        in_type=in_dtype, c_type=c_dtype, transpose_b=transpose_b
-    ](c_tt, a_tt, b_tt, ctx, _force_split_k(spec.splitk))
+    _launch[transpose_b](
+        ctx, spec.path, spec.splitk, c_dev, a_dev, b_dev, m, n, k
+    )
     ctx.synchronize()
 
     if rerun > 0:
@@ -298,9 +386,9 @@ def _run_case[
         ctx.enqueue_copy(first_h, c_dev)
         ctx.synchronize()
         for _ in range(rerun - 1):
-            enqueue_apple_matmul[
-                in_type=in_dtype, c_type=c_dtype, transpose_b=transpose_b
-            ](c_tt, a_tt, b_tt, ctx, _force_split_k(spec.splitk))
+            _launch[transpose_b](
+                ctx, spec.path, spec.splitk, c_dev, a_dev, b_dev, m, n, k
+            )
             ctx.synchronize()
             var rep_h = ctx.enqueue_create_host_buffer[c_dtype](c_size)
             ctx.enqueue_copy(rep_h, c_dev)
@@ -389,12 +477,22 @@ def _run_case[
 def run_one_case(
     ctx: DeviceContext,
     spec: CaseSpec,
+    cc: Int,
     check: Bool = False,
     rerun: Int = 0,
     contract: Bool = False,
 ) raises:
     """Dispatches on the runtime `tb` axis to the two comptime instantiations.
+
+    A PATH_M5 case on non-M5 silicon is skipped rather than run: only that path
+    needs M5, so skipping per case (instead of aborting the whole run) keeps the
+    PATH_8X8 cases executing on M1-M4.
     """
+    if spec.path == PATH_M5 and cc != 5:
+        print(
+            "FUZZ_SKIP reason=path-m5-requires-apple-m5 compute_capability=", cc
+        )
+        return
     if spec.tb == 1:
         _run_case[True](ctx, spec, check, rerun, contract)
     else:
@@ -429,22 +527,13 @@ def main() raises:
                 specs[i].splitk,
                 "dist=",
                 specs[i].dist,
+                "path=",
+                specs[i].path,
             )
         return
 
     with DeviceContext() as ctx:
-        # `enqueue_apple_matmul` raises on anything but M5, and the `apple_gpu`
-        # bazel constraint also covers M1-M4. Skip loudly rather than reporting a
-        # hardware mismatch as a kernel bug.
         var cc = ctx.compute_capability()
-        if cc != 5:
-            print(
-                "FUZZ_SKIP reason=requires-apple-m5 compute_capability=",
-                cc,
-            )
-            print("FUZZ_RESULT verdict=PASS")
-            return
-
         if mode == "single":
             var spec = CaseSpec(
                 flag_int(args, "--m", 128),
@@ -453,9 +542,10 @@ def main() raises:
                 flag_int(args, "--tb", 0),
                 flag_int(args, "--splitk", 0),
                 flag_int(args, "--dist", 0),
+                flag_int(args, "--path", PATH_8X8),
             )
             print("FUZZ_SINGLE ", spec)
-            run_one_case(ctx, spec, check, rerun, contract)
+            run_one_case(ctx, spec, cc, check, rerun, contract)
             print("FUZZ_RESULT verdict=PASS")
             return
 
@@ -468,10 +558,12 @@ def main() raises:
             in_dtype,
             "c_dtype=",
             c_dtype,
+            "compute_capability=",
+            cc,
             "===",
         )
         var specs = gen_specs(the_budget)
         for i in range(len(specs)):
             print("case", i, ":", specs[i])
-            run_one_case(ctx, specs[i], check, rerun, contract)
+            run_one_case(ctx, specs[i], cc, check, rerun, contract)
         print("=== done:", len(specs), "cases ===")

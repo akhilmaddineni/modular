@@ -107,6 +107,11 @@ the corresponding flag (`--rerun` / `--batch-invariance` / `--batch-variance`).
 > unavailable there. They default to `ref` and back it with `determinism` and a
 > `contract` that carries the OOB signal instead (a NaN planted in one A row
 > must reach every output element of that row and no other row).
+> `apple_matmul` also fuzzes a `path` axis covering both Apple dense GEMMs: the
+> M5 hardware-MMA kernel and the `gemm_kernel_apple_8x8` kernel the dispatcher
+> uses on M1-M4. Cases report `FUZZ_SKIP` on silicon that cannot run the drawn
+> path, so the M5 path is skipped on M1-M4 rather than failing; the draw is
+> skewed 1:3 toward the 8x8 path so most of the budget stays productive there.
 
 Cross-run comparisons always live inside the target process — the orchestrator
 issues one verdict per subprocess and never holds two cases' outputs.

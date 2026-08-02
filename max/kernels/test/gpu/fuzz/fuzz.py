@@ -133,9 +133,11 @@ _TARGETS: dict[str, FuzzTarget] = {
         ),
         binary="bazel-bin/max/kernels/test/gpu/fuzz/fuzz_apple_matmul.mojo.test",
         description=(
-            "Apple M5 (Metal) dense GEMM enqueue_apple_matmul; M/N/K +"
-            " transpose_b + force_split_k are all runtime axes. No Compute"
-            " Sanitizer on Metal, so: ref (default), determinism, contract"
+            "Apple (Metal) dense GEMM: both the M5 hardware-MMA path"
+            " (enqueue_apple_matmul) and the M1-M4 gemm_kernel_apple_8x8 path;"
+            " M/N/K + transpose_b + force_split_k + kernel path are runtime"
+            " axes. No Compute Sanitizer on Metal, so: ref (default),"
+            " determinism, contract"
         ),
         default_oracle="ref",
     ),
