@@ -99,6 +99,15 @@ Not every target supports every oracle. Each target declares a default oracle
 reference, special-value contract, or split-K decomposition exists; likewise
 `determinism`/`batch_invariance`/`batch_variance` only where the target parses
 the corresponding flag (`--rerun` / `--batch-invariance` / `--batch-variance`).
+
+> Metal (Apple GPU) targets — currently `apple_matmul` — are the exception to
+> the "default to a memory-safety oracle" rule: Compute Sanitizer is NVIDIA-only
+> and the redzone/poison allocators are unvalidated on Metal, so
+> `memcheck`/`initcheck`/`racecheck`/`synccheck`/`redzone`/`poison` are all
+> unavailable there. They default to `ref` and back it with `determinism` and a
+> `contract` that carries the OOB signal instead (a NaN planted in one A row
+> must reach every output element of that row and no other row).
+
 Cross-run comparisons always live inside the target process — the orchestrator
 issues one verdict per subprocess and never holds two cases' outputs.
 Targets that fuzz the input value distribution expose a `dist` spec field

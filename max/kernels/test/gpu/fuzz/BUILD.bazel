@@ -54,6 +54,20 @@ build_test(
     ],
 )
 
+# Apple/Metal compile-guard. Kept separate from `fuzz_build_test` above because
+# `//:apple_gpu` is mutually exclusive with the NVIDIA/AMD constraints its
+# members carry: folding the Apple target into that list would mark the whole
+# build_test incompatible everywhere and silently disable the guard for all 31
+# NVIDIA/AMD targets. This one is selected on Apple-GPU hosts instead.
+build_test(
+    name = "fuzz_apple_build_test",
+    tags = ["gpu"],
+    target_compatible_with = ["//:apple_gpu"],
+    targets = [
+        ":fuzz_apple_matmul.mojo.test",
+    ],
+)
+
 # CPU unit test for the reusable fuzz harness (_fuzz.mojo): boundary-aware shape
 # generation and the value-distribution fills (incl. NaN/Inf injection). No GPU.
 mojo_test(
@@ -99,6 +113,38 @@ mojo_test(
         "//max:linalg",
         "//max:nn",
         "//max:structured_kernels",
+        "@mojo//:std",
+    ],
+)
+
+# Target: Apple M5 (Metal) dense GEMM `enqueue_apple_matmul`. Unlike the SM100
+# target above, M/N/K are ALL runtime fuzz axes (the Apple kernel derives them
+# from the TileTensor dims), alongside transpose_b and the force_split_k route.
+# Compute Sanitizer does not exist on Metal, so the oracles are `ref` (default),
+# `determinism` and a NaN-propagation `contract` rather than memcheck.
+mojo_test(
+    name = "fuzz_apple_matmul.mojo.test",
+    size = "large",
+    srcs = [
+        "_fuzz.mojo",
+        "fuzz_apple_matmul.mojo",
+    ],
+    copts = IGNORED_POINTER_DEPRECATIONS_COPTS,
+    exec_properties = {
+        "test.resources:gpu-memory": "4",
+    },
+    main = "fuzz_apple_matmul.mojo",
+    tags = [
+        "gpu",
+        "manual",
+    ],
+    target_compatible_with = [
+        "//:has_gpu",
+        "//:apple_gpu",
+    ],
+    deps = [
+        "//max:internal_utils",
+        "//max:linalg",
         "@mojo//:std",
     ],
 )

@@ -126,6 +126,19 @@ _TARGETS: dict[str, FuzzTarget] = {
         ),
         default_oracle="memcheck",
     ),
+    "apple_matmul": FuzzTarget(
+        name="apple_matmul",
+        bazel_target=(
+            "//max/kernels/test/gpu/fuzz:fuzz_apple_matmul.mojo.test"
+        ),
+        binary="bazel-bin/max/kernels/test/gpu/fuzz/fuzz_apple_matmul.mojo.test",
+        description=(
+            "Apple M5 (Metal) dense GEMM enqueue_apple_matmul; M/N/K +"
+            " transpose_b + force_split_k are all runtime axes. No Compute"
+            " Sanitizer on Metal, so: ref (default), determinism, contract"
+        ),
+        default_oracle="ref",
+    ),
     "gemv_split_k": FuzzTarget(
         name="gemv_split_k",
         bazel_target="//max/kernels/test/gpu/fuzz:fuzz_gemv_split_k.mojo.test",
