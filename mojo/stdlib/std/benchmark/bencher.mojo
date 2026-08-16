@@ -343,10 +343,10 @@ struct BenchConfig(Copyable):
         "mean (ms)",
         "max (ms)",
         "duration (ms)",
+        "median (ms)",
+        "stddev (ms)",
     ]
     """Labels to print verbose timing results."""
-
-    # TODO: to add median and stddev to verbose-timing
 
     # ===-------------------------------------------------------------------===#
     # Life cycle methods
@@ -1298,10 +1298,18 @@ struct Bench(Writable):
                 var min = result.min(unit=Unit.ms)
                 var max = result.max(unit=Unit.ms)
                 var dur = result.duration(unit=Unit.ms)
+                var median = result.median(unit=Unit.ms)
+                var stddev = result.stddev(unit=Unit.ms)
                 writer.write(sep, min, self.pad(timing_widths[1], String(min)))
                 writer.write(sep, met, self.pad(timing_widths[2], String(met)))
                 writer.write(sep, max, self.pad(timing_widths[3], String(max)))
                 writer.write(sep, dur, self.pad(timing_widths[4], String(dur)))
+                writer.write(
+                    sep, median, self.pad(timing_widths[5], String(median))
+                )
+                writer.write(
+                    sep, stddev, self.pad(timing_widths[6], String(stddev))
+                )
 
             if self.config.format == Format.table:
                 writer.write(" |")
@@ -1376,6 +1384,8 @@ struct Bench(Writable):
         var max_mean = materialize[byte_length[1]]()
         var max_max = materialize[byte_length[2]]()
         var max_dur = materialize[byte_length[3]]()
+        var max_median = materialize[byte_length[4]]()
+        var max_stddev = materialize[byte_length[5]]()
         for i in range(len(self.info_vec)):
             # TODO: Move met (ms) to the end of the table to align with verbose
             # timing, don't repeat `Mean (ms)`, and make sure it works with
@@ -1395,7 +1405,21 @@ struct Bench(Writable):
             max_dur = max(
                 max_dur, String(result.duration(unit=Unit.ms)).byte_length()
             )
-        return [max_met, max_min, max_mean, max_max, max_dur]
+            max_median = max(
+                max_median, String(result.median(unit=Unit.ms)).byte_length()
+            )
+            max_stddev = max(
+                max_stddev, String(result.stddev(unit=Unit.ms)).byte_length()
+            )
+        return [
+            max_met,
+            max_min,
+            max_mean,
+            max_max,
+            max_dur,
+            max_median,
+            max_stddev,
+        ]
 
 
 @fieldwise_init
